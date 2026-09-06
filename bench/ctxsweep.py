@@ -1,102 +1,42 @@
 #!/usr/bin/env python3
 """
-ctxsweep — prompt processing and generation throughput across the context ladder.
+ctxsweep — prompt-processing and generation throughput across the context ladder.
 
-The shape Apple-silicon benchmarks publish (0.5k to 256k, prefill and decode at
-each length). Running it here makes the two comparable, and it is the right
-shape for this project's central finding: a single tok/s number means nothing
-without the prompt size attached.
+The format Ivan Fioravanti publishes for Apple silicon (0.5k -> 256k, prefill and
+decode at each length). Running it here makes the two directly comparable, and it
+is the right shape for this project's central finding: a single tok/s number is
+meaningless without the prompt size attached. The same config on this box gives
+47, 187 or 510 tok/s depending on workload.
 
 Three things this adds over the format it copies:
 
-  cold vs warm TTFT   the prefix cache made visible per rung
-  accepted tokens     accepted tokens per verify pass, the mechanism metric
-  saturation          accepted / draft budget, the diagnostic that caught our
-                      draft budget being half what it should have been
+  fresh vs edit at every length  acceptance varies 8.55 vs 14.73 by content type,
+                                 a 2x swing a single generation curve hides
+  cold vs warm TTFT              ours goes 6.77s -> 0.4s on a repeat, and for
+                                 agentic work that matters more than tok/s
+  saturation                     accepted tokens / draft budget, the diagnostic
+                                 that caught our draft budget being half what it
+                                 should have been
 
 Prompts are calibrated against the SERVER's own tokenizer, so "8k" means 8k
-prompt tokens and not an estimate. Every prompt carries a per-run unique tag,
-so the prefix cache cannot serve one measurement from another's leftovers —
-except in the warm phase, where that is the point.
-
-Environment:
-    SPARK_BASE_URL   default http://localhost:8003/v1
-    SPARK_API_KEY    the server's API key
-    SPARK_MODEL      default qwen3.8-27b
+prompt_tokens and not an estimate. Every prompt carries a per-run unique tag so
+the prefix cache cannot serve one measurement from another's leftovers - except
+in the warm phase, where that is the point.
 
 Usage:
-    export SPARK_API_KEY=$(cat ~/models/vllm_api_key.txt)
-    python3 bench/ctxsweep.py --label recommended
-    python3 bench/ctxsweep.py --lengths 512,1024,2048 --out-tokens 128
+    export OPENAI_API_KEY=$(ssh spark 'cat ~/models/vllm_api_key.txt')
+    python3 ctxsweep.py --label qwen38-27b
+    python3 ctxsweep.py --lengths 512,1024,2048 --out-tokens 128   # quick check
 """
 import argparse, json, os, pathlib, statistics, time, urllib.request, uuid
 
 HERE = pathlib.Path(__file__).parent
-RESULTS = HERE.parent / "results"
 LADDER = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144]
-
-BASE_URL = os.environ.get("SPARK_BASE_URL", "http://localhost:8003/v1")
-MODEL = os.environ.get("SPARK_MODEL", "qwen3.8-27b")
-API_KEY = os.environ.get("SPARK_API_KEY", "")
 
 TASK = ("\n\n---\nRead the code above. Write a short Python function "
         "`summarise_run(rows)` that takes a list of result dicts and returns a "
         "markdown table of the median, min and max of the 'decode_tok_s' field "
         "per label. Return only the function in one code block.")
-
-# Filler prose for the seed corpus. The corpus must be neutral text this repo
-# owns, long enough to grow a 260k-token prompt, and stable between runs so two
-# sweeps build the same prompt at the same rung.
-PROSE = """
-A benchmark is a measurement, and a measurement without its conditions is a
-rumour. The conditions that matter on this box are the prompt size, the output
-size, the sampler, the number of repeats and the number of boots. Change any
-one of them and the headline number moves by more than the config change you
-were trying to measure.
-
-Memory bandwidth sets the floor. The machine reads the model weights once per
-verification pass, so the fastest a pass can finish is the weight bytes divided
-by the bus rate. Everything above that floor is scheduling, and everything
-below it is a mistake in the arithmetic.
-
-Speculative decoding pays only when the output is guessable. A drafter proposes
-a block of tokens, the target checks them in one pass, and the accepted prefix
-is kept. On a verbatim copy task the drafter is right almost every time. On a
-free-form answer it is right about half the time. The same server therefore
-reports two very different speeds, and both are true.
-
-Caches hide work. A prompt served from the prefix cache costs a lookup instead
-of a prefill, so the second reading of the same prompt is not the same
-measurement as the first. An agent that keeps one long conversation alive lives
-almost entirely in the second case, which is why the cold and the warm numbers
-are both reported here rather than averaged into one.
-
-Concurrency is a different clock again. Aggregate throughput rises with the
-number of streams while each single stream gets slower, so a repository that
-quotes only the aggregate and a repository that quotes only the single stream
-can disagree by a factor of four while both are honest. Quote the prompt size,
-the stream count, and the clock.
-
-The output of a quantised model is not a fixed function of its input. Batch
-size decides which matrix-multiply kernel runs, the kernel decides the rounding,
-and the rounding decides any near-tie between two candidate tokens. Two runs of
-the same server with the same seed can therefore differ, with or without a
-drafter in the loop. That is a property of the arithmetic, not of the drafter.
-
-Write down what you did not measure. A single box on a single day, one boot per
-configuration, one task family: those limits belong next to the numbers, not in
-a footnote nobody reads.
-"""
-
-
-def seed_corpus(repeat=200):
-    """Deterministic filler: this file's own source plus plain prose.
-
-    Repeated to length. No file outside this folder is read, so the corpus is
-    the same wherever the repository is checked out.
-    """
-    block = pathlib.Path(__file__).read_text() + "\n" + PROSE + "\n"
-    return block * repeat
 
 
 def _hdr(key):
@@ -135,11 +75,25 @@ def build_prompt(base, model, key, target, tag, corpus):
     return body, ntok(base, model, key, body)
 
 
-def chat(base, model, key, prompt, max_tokens, timeout=3600, temperature=0.0):
+def chat(base, model, key, prompt, max_tokens, timeout=3600, temperature=0.0,
+         top_p=None, thinking=False):
+    # thinking=False keeps the historic behaviour: the sweep pinned the template
+    # kwargs off regardless of how the server was launched, so every published
+    # rung is a no-thinking number. thinking=True hands the decision back to the
+    # server, so a THINKING=1 boot actually reasons and the sampler settings the
+    # model card asks for (temp 0.6, top_p 0.95) mean something.
     body = {"model": model, "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": True,
-            "stream_options": {"include_usage": True},
-            "chat_template_kwargs": {"enable_thinking": False, "preserve_thinking": False}}
+            "stream_options": {"include_usage": True}}
+    if top_p is not None:
+        body["top_p"] = top_p
+    if not thinking:
+        body["chat_template_kwargs"] = {"enable_thinking": False,
+                                        "preserve_thinking": False}
+    elif os.environ.get("CTXSWEEP_EFFORT"):
+        # thinking arm at a stated effort (the 27B thinking chart used "medium")
+        body["chat_template_kwargs"] = {"enable_thinking": True,
+                                        "reasoning_effort": os.environ["CTXSWEEP_EFFORT"]}
     req = urllib.request.Request(base + "/chat/completions",
                                  data=json.dumps(body).encode(), headers=_hdr(key))
     t0 = time.perf_counter()
@@ -156,13 +110,21 @@ def chat(base, model, key, prompt, max_tokens, timeout=3600, temperature=0.0):
             except json.JSONDecodeError:
                 continue
             if o.get("error") or o.get("object") == "error":
-                # The server returns limit and validation errors inside the
-                # stream. Without this they are counted as a 1-token completion.
+                # SGLang returns limit/validation errors inside the stream; without
+                # this they were counted as a 1-token completion (2026-09-02).
                 raise RuntimeError(f"server error in stream: {str(o.get('error') or o.get('message'))[:200]}")
             if o.get("usage"):
                 usage = o["usage"]
             for c in o.get("choices", []):
-                d = c.get("delta", {}).get("content")
+                delta = c.get("delta", {}) or {}
+                # In thinking mode SGLang's qwen3 reasoning parser streams the
+                # trace as reasoning_content and only the final answer as
+                # content. Counting content alone made the whole trace look like
+                # latency: TTFT read 5.8 s on a 322-token prompt and generation
+                # read 549 tok/s, because completion_tokens (which DOES include
+                # the trace) was divided by the sliver of time after it. Both
+                # fields are generated tokens and both count here.
+                d = delta.get("content") or delta.get("reasoning_content")
                 if d:
                     chunks.append(d)
                     if ttft is None:
@@ -194,9 +156,9 @@ def busy(base):
 
 
 def spec_counters(base):
-    """vLLM reports speculative decoding as monotonic counters. A per-rung delta
-    gives tokens per verification pass exactly. Returns None on SGLang, whose
-    gauge path is used instead."""
+    """vLLM exposes speculative decoding as monotonic counters; a per-rung delta
+    gives tokens per verification pass exactly (accepted + 1 bonus per draft).
+    Returns None on SGLang, whose gauge path is used instead."""
     d = gauge(base, "vllm:spec_decode_num_drafts_total")
     if d is None:
         return None
@@ -206,7 +168,7 @@ def spec_counters(base):
 
 
 def spec_delta(before, after):
-    """(tokens per pass, draft budget) from two vLLM counter snapshots."""
+    """(tokens per pass, draft budget) from two vLLM counter snapshots, or (None, None)."""
     if not before or not after:
         return None, None
     drafts = after["drafts"] - before["drafts"]
@@ -233,32 +195,40 @@ def draft_budget(base, key):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default=BASE_URL)
-    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--base", default="http://192.168.1.152:8003/v1")
+    ap.add_argument("--model", default="qwen3.8-27b")
     ap.add_argument("--label", default="sweep")
     ap.add_argument("--lengths", default=",".join(str(x) for x in LADDER))
     ap.add_argument("--out-tokens", type=int, default=256)
     ap.add_argument("--reps", type=int, default=2)
+    ap.add_argument("--top-p", type=float, default=None)
+    ap.add_argument("--thinking", action="store_true",
+                    help="let the server decide thinking mode instead of forcing it off")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--skip-warm", action="store_true",
                     help="skip the cache-hit phase (halves the run time)")
     args = ap.parse_args()
 
-    key = API_KEY
+    key = os.environ.get("OPENAI_API_KEY", "")
     lengths = [int(x) for x in args.lengths.split(",") if x.strip()]
     budget = draft_budget(args.base, key)
-    seed = seed_corpus()
+    # Real source text: prose-like enough to be a fair prefill, and long enough
+    # for the 256k rung without repeating a short block (which the cache would
+    # collapse).
+    seed = (pathlib.Path(__file__).read_text() + "\n"
+            + (HERE / "xbench.py").read_text() + "\n"
+            + (HERE / "verify_snake.js").read_text() + "\n") * 40
 
-    out = RESULTS / f"ctxsweep-{args.label}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    out = HERE / "results" / f"ctxsweep-{args.label}-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
     out.parent.mkdir(exist_ok=True)
     print(f"endpoint {args.base}   draft budget {budget}   out_tokens {args.out_tokens}\n")
     print(f"{'ctx':>8} {'prompt tok':>11} {'prefill t/s':>12} {'gen t/s':>9} "
           f"{'tok/pass':>9} {'sat':>5} {'cold TTFT':>10} {'warm TTFT':>10}")
     print("-" * 82)
 
-    # Prompt plus output must fit the context limit. The server rejects the
-    # request (HTTP 400) rather than truncating, so leave a margin for the
-    # chat template.
+    # prompt + output must fit the context limit; both engines reject the
+    # request (HTTP 400) rather than truncating. Chat-template overhead is small
+    # but real, hence the extra margin.
     CTX_LIMIT = 262144
     lengths = [min(L, CTX_LIMIT - args.out_tokens - 2048) for L in lengths]
 
@@ -269,9 +239,10 @@ def main():
         tag = uuid.uuid4().hex[:8]
         try:
             prompt, ptok = build_prompt(args.base, args.model, key, L, tag, seed)
-            # Without a task on the end the model free-continues a code dump and
-            # acceptance collapses to 2-4 tokens per pass. The sweep then
-            # measures how predictable the corpus is, not the machine.
+            # Without a task on the end, the model free-continues a code dump and
+            # acceptance collapses to 2-4 tokens/pass — the sweep then measures
+            # how predictable the corpus is, not the machine. A real instruction
+            # makes the generation column comparable to the decode fixtures.
             prompt = prompt + TASK
         except Exception as e:
             print(f"{L:>8}  prompt build failed: {e}")
@@ -281,7 +252,9 @@ def main():
         gens, ttfts = [], []
         c0 = spec_counters(args.base)
         for r in range(args.reps):
-            res = chat(args.base, args.model, key, prompt, args.out_tokens, temperature=args.temperature)
+            res = chat(args.base, args.model, key, prompt, args.out_tokens,
+                       temperature=args.temperature, top_p=args.top_p,
+                       thinking=args.thinking)
             if res["ctok"] < 8:
                 print(f"{L:>8}  only {res['ctok']} completion tokens; skipping")
                 break
@@ -295,16 +268,17 @@ def main():
 
         warm = None
         if not args.skip_warm:
-            w = chat(args.base, args.model, key, prompt, args.out_tokens, temperature=args.temperature)
+            w = chat(args.base, args.model, key, prompt, args.out_tokens,
+                     temperature=args.temperature, top_p=args.top_p,
+                     thinking=args.thinking)
             warm = w["ttft"]
 
         tpp = gauge(args.base, "sglang:spec_accept_length")
         if tpp is None:
             tpp, vb = spec_delta(c0, spec_counters(args.base))
-            budget = budget or (vb + 1 if vb else None)   # vLLM: budget tokens plus 1 bonus
+            budget = budget or (vb + 1 if vb else None)   # vLLM: budget tokens + 1 bonus
         sat = (tpp / budget) if (tpp and budget) else None
-        row = {"label": args.label, "temperature": args.temperature, "ctx_target": L,
-               "prompt_tokens": cold["ptok"],
+        row = {"label": args.label, "temperature": args.temperature, "ctx_target": L, "prompt_tokens": cold["ptok"],
                "prefill_tok_s": round(cold["ptok"] / cold["ttft"], 1),
                "gen_tok_s": round(statistics.median(gens), 2),
                "tok_per_pass": tpp, "saturation": round(sat, 3) if sat else None,

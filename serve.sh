@@ -15,8 +15,17 @@
 #   MODE=nvfp4        nvfp4 = the checkpoint as published (side layers bf16)
 #                     hybrid = side layers in blockwise fp8: +20% decode, +15-20% KV, same
 #                     tournament score. Needs the one-time scripts/prepare-hybrid.sh
-#   PREFIX_CACHE=1    1 = --enable-prefix-caching (correct with this image's block_size fix;
-#                     repeated prefixes — system prompts, multi-turn, tool loops — skip the prefill)
+#   PREFIX_CACHE=0    vLLM forces Mamba caching into 'align' mode the moment prefix caching is
+#                     on for this model (checked directly: docker logs, config.py:605), and align
+#                     mode has real, reproducible bugs on this box (2026-09-07): identical repeated
+#                     prompts at temperature 0 sometimes return completions that ignore the actual
+#                     content. Applying the four known upstream fixes (Radar105, unmerged vLLM PRs
+#                     53798/54076/54713/55390) compiled and booted clean but did not change the
+#                     failure at all (hit fraction and TTFT identical to 16 decimal places) - the
+#                     bug is real but isn't the one these patches fix. No-cache measured faster on
+#                     decode at every depth tested and never reproduced the failure. See RESULTS.md
+#                     §8. 1 re-enables caching (repeated prefixes skip the prefill) at the cost of
+#                     both bugs above.
 #   EXACT_TOPK=1      1 = exact, deterministic QSA top-k (identical output at temperature 0;
 #                     costs ~10-40% on long prefills). 0 = stock kernel (faster, non-deterministic)
 #   PORT=18300        host port for the API
@@ -48,7 +57,7 @@ IMAGE="${IMAGE:-qwen38-flash-dgx}"
 MODEL="${MODEL:-RadixArk/Qwen3.8-Flash-Next-NVFP4}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 MODE="${MODE:-nvfp4}"
-PREFIX_CACHE="${PREFIX_CACHE:-1}"
+PREFIX_CACHE="${PREFIX_CACHE:-0}"
 EXACT_TOPK="${EXACT_TOPK:-1}"
 PORT="${PORT:-18300}"
 CTX="${CTX:-262144}"

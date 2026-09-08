@@ -195,3 +195,128 @@ disagree by more than an order of magnitude on requests that should look
 similar to the scheduler. Not resolved as of 2026-09-06. Until it is, treat
 `concbench.py`'s Flash-Next numbers as unverified and use sparkDash's (§2) for
 anything you need to cite.
+
+## 8. `PREFIX_CACHE` default changed to 0 (2026-09-07)
+
+**Not a config choice — vLLM forces it.** `--enable-prefix-caching` on this
+model puts Mamba caching into `align` mode unconditionally; confirmed straight
+from this server's own boot log:
+
+```
+config.py:605 Mamba cache mode is set to 'align' for Qwen4ExpForConditionalGeneration
+              by default when prefix caching is enabled
+```
+
+Neither `--mamba-cache-mode none` nor `all` can be forced instead — both were
+tried directly against this server and vLLM rejected each one back to `align`
+(`none` silently, `all` with an explicit warning naming the fallback). There is
+no flag-only way to reach a different Mamba caching mode with prefix caching on.
+
+**`align` mode has a real, reproducible correctness problem here.** Sending
+the identical prompt twice in a row at temperature 0 sometimes returns a
+completion that does not engage with the actual content at all — e.g. a
+generic "I'll start by exploring the project structure" opener for a prompt
+that was pure benchmark-script text, no project present. Re-running the exact
+same request immediately after gives a correct, on-topic answer that then
+stays stable across further repeats. The realistic cost: a tool-call-shaped
+request extending a cached 100k-token prefix by 40k new tokens measured
+anywhere from 2 s (clean cache hit) to 80 s (cold-equivalent miss) across
+otherwise-identical runs.
+
+Four real, still-open, unmerged upstream vLLM bugs describe exactly this
+class of failure for hybrid Mamba models under speculative decoding
+([Radar105's write-up](https://github.com/Radar105/qwen38-flash-next-nvfp4-spark)
+found them first): PRs
+[53798](https://github.com/vllm-project/vllm/pull/53798),
+[54076](https://github.com/vllm-project/vllm/pull/54076),
+[54713](https://github.com/vllm-project/vllm/pull/54713),
+[55390](https://github.com/vllm-project/vllm/pull/55390). We reconciled all
+four by hand against our exact vLLM commit (`0.1.dev20073+g8e685d198` — none
+applied cleanly with `git apply`, the codebase had drifted from whatever
+snapshot they were cut against) and deployed them as mounted file overrides.
+The server booted clean, CUDA graphs captured normally, decode speed improved
+over buggy `align` — **and the actual failure was completely unaffected**: hit
+fraction and TTFT on the same tool-call test came back identical to the
+unpatched baseline to 16 decimal places. The bugs are real; they are not the
+cause of what we're seeing.
+
+**Measured comparison, `bench/ctxsweep.py`, 2 reps, `--skip-warm`:**
+
+| Prompt tok | `align` (old default) | No-cache (new default) | Patched `align` |
+|---|---:|---:|---:|
+| ~2,270 | 41.07 tok/s | **43.50** tok/s | 42.80 tok/s |
+| ~32,850 | 42.62 tok/s | **45.04** tok/s | 44.20 tok/s |
+| ~131,440 | 40.64 tok/s | **43.53** tok/s | 43.46 tok/s |
+
+No-cache wins decode at every depth tested, ties patched `align` at the top
+rung, and never reproduced the determinism failure across any test run against
+it. The only workload that loses anything by disabling caching is one with
+genuinely large repeated prefixes across turns — and `align` mode cannot be
+trusted for that workload anyway, per the above. `PREFIX_CACHE=0` is therefore
+the default now, not a fallback: it was already the better measured option
+before the patch attempt, and four hours of careful patching didn't produce a
+config that beat it.
+
+**Numbers elsewhere in this document predate this change.** §1's context
+ladder and the tuning-knob table in the README were measured under the old
+`PREFIX_CACHE=1` default. Because that sweep's prompts are unique per rung
+(prefix caching provides no benefit to a benchmark designed to defeat it),
+the gap is small and in the same direction as the table above — the published
+"37-44 tok/s flat" claim holds under the new default as well, if anything
+understating it slightly.
+
+## 9. Candidate recipe (measured 2026-09-08, not yet adopted)
+
+A combination of three changes, each independently measured and gated on
+functional/quality checks before being combined, reached
+**+27.9% fixed-work rate / -21.8% latency** against the published recipe on a
+frozen four-task OpenCode replay (interval coding, TTL-cache coding, release
+planning, critical-path reasoning; pooled across two independent server starts
+and six measured repetitions per cell, one stable output hash per cell across
+both starts):
+
+| Frozen OpenCode cell | Rate gain |
+|---|---:|
+| Interval coding | +21.8% |
+| TTL-cache coding | +26.5% |
+| Release prose/thinking | +35.8% |
+| Critical-path thinking | +27.9% |
+
+A second, independent reproduction against this repo's own published harness
+(`bench/ctxsweep.py` at the pinned commit this repo was at, plus sparkDash
+1.8.6) found +27.6% geometric-mean decode across the context ladder (512 to
+259,584 tokens, every rung improved) and +20.4% geometric-mean aggregate
+throughput across sparkDash's concurrency sweep (1/2/4/6/8 streams, code/
+structured/prose).
+
+**What changed:**
+- The MTP draft head's proposal vocabulary reduced to an independently
+  selected 65,536-row slice with local argmax — the *target* model still
+  verifies every drafted token against its full head, so this narrows what
+  the drafter searches, not what the target can output. Vocabulary was
+  selected from vLLM's own source/docstrings, not from benchmark prompts.
+- A deterministic top-k CUDA kernel extension for the sparse-attention path,
+  verified against a 210-case standalone contract suite (kernel correctness
+  only — not a model-quality or performance claim on its own).
+- Recurrent (Mamba/GDN) state storage moved to BF16. This is the one change
+  that measurably alters output: generation hashes differ from the
+  unpatched baseline because of it, though every measured cell still produces
+  one *stable* hash across repeated runs of the same input.
+- The existing FP8 PLE mmap lookup staged into a single 10 MiB buffer
+  *before* the forward pass, rather than inside it. This is what makes
+  `FULL_DECODE_ONLY` CUDA graphs possible at all for this model: the mmap
+  gather is a synchronous host/device operation, which is illegal inside a
+  captured graph (see the PIECEWISE-only note in the Requirements table
+  above) — staging it earlier removes it from the graphed region entirely.
+
+**Why this is not the default yet:** the underlying patches are real and
+checksummed on the box (a vendored CUDA kernel, a draft-vocabulary patch, a
+PLE-staging overlay, each with its own Dockerfile and SHA256 manifest) but are
+not yet packaged into this repository in a form a clone can rebuild — exactly
+the bar every other number in this file is held to. The BF16 recurrent-state
+change is a genuine, acknowledged precision change, not a lossless swap, and
+a paired quality audit (MATH-500 plus AIME 2024, symbolic grading) was still
+in progress as of this writing. Treat the numbers above as a strong,
+well-instrumented result from one box, not yet a verified drop-in upgrade —
+matching this project's own standard: "A real quality claim needs a task
+benchmark, and none has been run" until one actually has.

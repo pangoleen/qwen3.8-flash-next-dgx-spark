@@ -25,6 +25,24 @@ the full ladder. Everything else, with its conditions, is in
 
 ![Flash-Next context ladder, thinking off](charts/ctxsweep-flashnext-thinking-off.png)
 
+> **Update, 2026-09-09.** Two findings that change how to read the chart above.
+>
+> **Prefix caching matters far more than any tuning here.** That chart was
+> measured with prefix caching on; `serve.sh` has defaulted it *off* since
+> 2026-09-07 (RESULTS.md §8). Turning it off costs up to **26x** on a repeat
+> turn at 259k context and **34%** on real multi-turn tasks, because every turn
+> re-reads the whole conversation. Decode rate is unaffected, so every tok/s
+> figure in this README still holds — but if you are running an agent, read
+> [RESULTS.md §11](RESULTS.md) before accepting the default.
+>
+> **The gains are not code-only.** A tuned build measured the same day reaches
+> +31.7% on code, **+34.2% on thinking**, and +27.6% on prose, with accepted
+> tokens per pass unchanged — so the win is cheaper passes, not better
+> guessing, which is why it survives on prose. Real tasks: 138.3 s -> 96.8 s,
+> or 63.7 s with caching on. See [RESULTS.md §10](RESULTS.md) and
+> `charts/threeway-comparison.png`. Those builds are **not yet reproducible
+> from this repository**; §10 says exactly why.
+
 ## Requirements
 
 | Item | Value | Source |
@@ -264,8 +282,16 @@ scripts/weight_utils.nogds.py   FAST_LOAD's patched vLLM loader see Traps, scrip
 bench/ctxsweep.py               context ladder, the headline instrument
                                                             --lengths --reps --temperature
 bench/plotsweep.py              rebuild the ladder chart    positional jsonl files, --out
+bench/cache_gate.py             prefix-caching correctness gate: repeat, interleave,
+                                on-topic marker. Run it before trusting caching   §11
 data/ctxsweep-*.csv/.jsonl      the sweeps behind every table above
+data/ctxsweep-{code,prose,thinking}-*-20260909.jsonl
+                                the three-recipe comparison by output type         §10
+data/replay-*-20260909.jsonl    real task wall time, four frozen tasks             §10, §11
 charts/*.png                    regenerated from data/ by bench/plotsweep.py
+charts/threeway-comparison.png  published vs tuned vs tuned v2                     §10
+charts/ctxsweep-tunedv2-cacheon.png
+                                tuned v2 with caching on, same panels as the top   §11
 RESULTS.md                      every table, with its conditions, and the measuring lessons
 AGENT_SETUP.md                  paste into a coding agent on the Spark to do the whole setup
 ```

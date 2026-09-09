@@ -320,3 +320,167 @@ in progress as of this writing. Treat the numbers above as a strong,
 well-instrumented result from one box, not yet a verified drop-in upgrade —
 matching this project's own standard: "A real quality claim needs a task
 benchmark, and none has been run" until one actually has.
+
+## 10. Three recipes, one harness, by output type (2026-09-09)
+
+§9 recorded a candidate measured against the published recipe on a frozen
+replay. This section replaces that with a direct comparison: three server
+configurations, measured the same day, on the same box, with this repository's
+own `bench/ctxsweep.py` at identical flags — thinking off, temperature 0.6,
+512 output tokens, 4 reps per rung, ten rungs, one boot per arm, **prefix
+caching off on all three** so the arms differ only by recipe.
+
+| Arm | What it is |
+|---|---|
+| `published` | This repository's recipe, the stock image |
+| `tuned` | Adds draft-vocabulary reduction, deterministic top-k, BF16 recurrent state, staged PLE, GDN/FlashInfer |
+| `tuned v2` | The above plus compacted QSA, FP8 MTP experts, FP8 draft head, async metadata |
+
+Data: `data/ctxsweep-{code,prose}-{published,tuned,tunedv2}-20260909.jsonl`.
+Chart: `charts/threeway-comparison.png`.
+
+### Decode rate, mean across the ladder
+
+| Output type | published | tuned | tuned v2 | tuned | tuned v2 |
+|---|---:|---:|---:|---:|---:|
+| Code, thinking off | 43.1 | 52.6 | 56.8 | +22.0% | +31.7% |
+| Code, thinking on (medium effort) | 40.0 | 51.6 | 53.7 | +28.9% | **+34.2%** |
+| Prose | 24.7 | 28.9 | 31.6 | +16.9% | +27.6% |
+
+Gains are geometric means of the per-rung ratios. Every rung improves in every
+arm; the ordering never inverts.
+
+**The gain is not workload-specific, and thinking benefits most.** That is worth
+stating plainly because the obvious criticism of a speculative-decoding result
+is that it only helps predictable output. Here it does not: reasoning traces
+gain more than code does.
+
+### Why the gain survives on prose
+
+Accepted tokens per pass, same runs:
+
+| Output type | published | tuned | tuned v2 |
+|---|---:|---:|---:|
+| Code | 3.64 | 3.57 | 3.58 |
+| Code + thinking | 3.49 | 3.54 | 3.53 |
+| Prose | 2.35 | 2.33 | 2.35 |
+
+Acceptance is unchanged. The recipes do not draft better — each speculative
+pass simply costs less. An optimisation that worked by raising acceptance
+would evaporate on prose, where acceptance is low; this one does not, which is
+why the prose column moves at all.
+
+Prose remains slower in absolute terms (31.6 against 56.8) for the same reason
+it always was: 2.35 accepted tokens per pass against 3.58. That is a property
+of the text, not of the recipe, and nothing here changes it.
+
+### Real task wall time
+
+Four frozen tasks from an OpenCode-derived replay — two coding, two
+thinking — median of 3 measured reps after a warm-up pass, fixed output
+budgets, one stable output hash per cell.
+
+| Task | published | tuned | tuned v2 |
+|---|---:|---:|---:|
+| Interval coding | 4.5 s | 3.7 s | 3.5 s |
+| TTL-cache coding | 44.7 s | 34.0 s | 31.9 s |
+| Critical path (thinking) | 45.6 s | 32.8 s | 31.6 s |
+| Release plan (thinking) | 43.5 s | 31.8 s | 29.8 s |
+| **Total** | **138.3 s** | **102.3 s** | **96.8 s** |
+
+**30.0% less wall time**, with the two thinking tasks improving most.
+
+### What is not reproducible from this repository
+
+The `tuned` and `tuned v2` arms run locally built images that are **not
+published**, so a clone cannot rebuild them today. Two separate obstacles:
+
+- The draft-vocabulary patch is `AGPL-3.0-or-later`, copyright MiaAI Lab. This
+  repository is MIT. That file cannot be included here, and AGPL §13 means
+  serving a patched build may carry obligations of its own. The vocabulary
+  *list* is generated locally from Apache-2.0 vLLM source and is not the
+  blocker; the patch code is.
+- The remaining overlays are Apache-2.0 and publishable, and are being prepared
+  separately.
+
+Treat this section as a measured result on one box, not a recipe you can run.
+Also note the BF16 recurrent-state change alters generation hashes against the
+published recipe: it is a precision change, not a lossless one, and no task
+benchmark here proves output quality is unchanged.
+
+## 11. Prefix caching, re-examined (2026-09-09)
+
+§8 disabled prefix caching on 2026-09-07 because `align` mode returned
+wrong-topic completions. That decision was validated against decode benchmarks,
+which send a fresh prompt every time. **Those benchmarks are structurally
+incapable of measuring what caching is for**, so §8 measured the cost of the
+change at roughly zero and adopted it. This section corrects that.
+
+### What it costs to leave caching off
+
+Same image, same everything, one flag — `--enable-prefix-caching` against
+`--no-enable-prefix-caching`. Data:
+`data/ctxsweep-code-tunedv2-{,cacheon-}20260909.jsonl`.
+
+| Rung | warm TTFT off | warm TTFT on | end-to-end off | end-to-end on | Factor |
+|---:|---:|---:|---:|---:|---:|
+| 8,192 | 3.31 s | 0.78 s | 29.7 | 46.5 | 1.6x |
+| 32,768 | 13.24 s | 0.77 s | 11.4 | 47.4 | 4.2x |
+| 65,536 | 27.46 s | 0.89 s | 5.0 | 47.0 | 9.4x |
+| 131,072 | 58.13 s | 1.20 s | 4.0 | 43.2 | 10.7x |
+| 259,584 | 125.33 s | 1.23 s | 1.6 | 43.1 | **26.6x** |
+
+"End-to-end" is output tokens divided by warm TTFT plus generation time — what
+a caller waits for, not the decode phase alone. With caching off, warm TTFT
+**equals** cold TTFT from 65k upward: there is no resume, and every turn
+re-reads the whole conversation.
+
+Decode rate is unchanged by this flag (55-59 tok/s either way). Every decode
+number elsewhere in this document therefore stands regardless.
+
+### What it costs in real tasks
+
+Four frozen tasks, `tuned v2` image, cache off against cache on. Data:
+`data/replay-{overnight-metaasync,cache-on}-20260909.jsonl`.
+
+| Task | cache off | cache on | Faster |
+|---|---:|---:|---:|
+| Interval coding | 3.5 s | 3.2 s | 7.7% |
+| TTL-cache coding | 31.9 s | 23.0 s | 27.9% |
+| Release plan (thinking) | 29.8 s | 19.5 s | 34.6% |
+| Critical path (thinking) | 31.6 s | 18.0 s | **43.2%** |
+| **Total** | **96.8 s** | **63.7 s** | **34.2%** |
+
+All output hashes stable across three reps in both arms.
+
+Against the published recipe with caching off (138.3 s), the combination is
+**138.3 s -> 63.7 s**: roughly half from the recipe, half from one flag.
+
+### Correctness
+
+`bench/cache_gate.py` runs three checks on ~60k-token prompts: an identical
+prompt repeated five times at temperature 0; an interleaved `A B A B A`
+sequence, which is an agent returning to an earlier prefix after another has
+passed through the cache; and a planted marker each reply must echo, to catch
+fluent answers about the wrong thing.
+
+| Image | Boots | Rounds | Result |
+|---|---:|---:|---|
+| `tuned v2` | 2 | 2 | All passed |
+| `published` (stock) | 1 | 3 | All passed |
+
+**This does not fully clear the 2026-09-07 failure, and should not be read as
+doing so.** The gate exercises identical repeated prompts and alternating
+whole prompts. The original failure was seen on a different shape: a shared
+prefix of about 100k tokens extended by about 40k *new* tokens — a growing
+suffix, which is also the shape an agent actually produces and the case where
+align-mode chunk boundaries are most likely to matter. The gate does not
+reproduce that pattern, so it cannot prove that pattern is fixed.
+
+Accordingly `PREFIX_CACHE` **stays 0 by default** in `serve.sh` until the
+growing-suffix case is tested directly. The honest summary is: caching is worth
+up to 26x on repeat turns and 34% on real tasks; five gate runs across two
+images found no corruption; and the specific pattern that originally failed has
+not yet been re-tested. Anyone running an agent workload should weigh those
+three facts together rather than take the current default as a considered
+recommendation for their case.

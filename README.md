@@ -14,23 +14,29 @@ that was 2.5x slower than it needed to be.
 | | Generation, 325 tokens to 259k | Real task, 4 coding/thinking | 8 streams (code) |
 |---|---|---|---|
 | `serve.sh` alone | **41-44 tok/s**, flat | 138 s | **218 tok/s** aggregate |
-| plus `build/` overlays | **52 tok/s** mean, flat | **102 s** | not measured |
+| plus `build/` overlays | **52 tok/s** mean, flat | **102 s** | — |
+| the strongest build measured | **57 tok/s** mean | **97 s** (64 s cached) | **273 tok/s** aggregate |
 
-Both rows are this repository. The first is the launch script on the stock
-image, which is what Quickstart gives you. The second adds the four overlays in
-[`build/`](build/README.md) — a reduced draft head, a deterministic top-k
-kernel, BF16 recurrent state, and staging the FP8 table read out of the forward
-pass so full-decode CUDA graphs can capture. That last one is what makes the
-rest possible.
+Row 1 is the launch script on the stock image — what Quickstart gives you.
+Row 2 adds the four overlays in [`build/`](build/README.md): a reduced draft
+head, a deterministic top-k kernel, BF16 recurrent state, and staging the FP8
+table read out of the forward pass so full-decode CUDA graphs can capture. That
+last one is what makes the rest possible. Row 3 is the strongest build measured
+here, which adds four further overlays **not in this repository** — see
+[RESULTS.md §10](RESULTS.md) and §12.
+
+The concurrency column is measured with
+[sparkDash](https://github.com/MiaAI-Lab/sparkDash), the same instrument that
+produced the 218 figure, so the two are directly comparable: **+25.2%
+geometric mean across all 15 concurrency cells** ([RESULTS.md §12](RESULTS.md)).
 
 Conditions: hybrid mode (fp8 side layers), MTP 3, `GPU_MEM=0.80`, temperature 0
 (0.6 for the ladder), thinking off, decode only for the tok/s columns (time to
-first token excluded), 4 reps per rung, one boot. The concurrency figure is
-measured with [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash),
-not this repository's own scripts — see Concurrency below for why. The
-`build/` row was measured with prefix caching off; decode rate is unaffected by
-that flag (RESULTS.md §11), the task time is not. Everything else, with its
-conditions, is in [RESULTS.md](RESULTS.md).
+first token excluded), 4 reps per rung, one boot per arm. Concurrency uses
+sparkDash's own protocol — 2,048 forced output tokens per stream, 32-token
+warm-up. The `build/` row was measured with prefix caching off; decode rate is
+unaffected by that flag (RESULTS.md §11), the task time is not. Everything
+else, with its conditions, is in [RESULTS.md](RESULTS.md).
 
 ![Flash-Next context ladder, thinking off](charts/ctxsweep-flashnext-thinking-off.png)
 
@@ -329,6 +335,8 @@ data/ctxsweep-*.csv/.jsonl      the sweeps behind every table above
 data/ctxsweep-{code,prose,thinking}-*-20260909.jsonl
                                 the three-recipe comparison by output type         §10
 data/replay-*-20260909.jsonl    real task wall time, four frozen tasks             §10, §11
+data/sparkdash-*-tunedv2-20260909.json
+                                concurrency, measured here with sparkDash          §12
 charts/*.png                    regenerated from data/ by bench/plotsweep.py
 charts/threeway-comparison.png  published vs tuned vs tuned v2                     §10
 charts/ctxsweep-tunedv2-cacheon.png

@@ -537,3 +537,72 @@ a soak.
 Run `bench/suffix_gate.py` against your own workload if you depend on exact
 output. Set `PREFIX_CACHE=0` to avoid `align` mode entirely, at the cost of
 turn latency.
+
+## 12. Concurrency, measured here for the first time (2026-09-09)
+
+§2's concurrency numbers were measured by
+[MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash) rather than by
+this repository, and §7 records that this repository's own `concbench.py`
+disagrees with sparkDash by roughly 4x, unresolved. So the concurrency column
+has always been someone else's measurement.
+
+This section closes that. sparkDash now runs on the box, so the tuned build is
+measured with **the same instrument that produced the published baseline** —
+same protocol: 2,048 forced output tokens per stream, temperature 0, thinking
+off, 32-token warm-up, one boot.
+
+Arms: the published recipe as recorded in §2, against `tuned v2` with prefix
+caching on. Data: `data/sparkdash-{code,structured,prose}-2048-tunedv2-20260909.json`.
+
+| Workload | Streams | Published | Tuned v2 | Gain |
+|---|---:|---:|---:|---:|
+| Code | 1 | 45.42 | 60.55 | +33.3% |
+| | 2 | 82.21 | 115.49 | +40.5% |
+| | 4 | 131.88 | 161.13 | +22.2% |
+| | 6 | 171.62 | 216.13 | +25.9% |
+| | 8 | 218.32 | **273.23** | +25.2% |
+| | | | | **+29.2%** geomean |
+| Structured | 1 | 45.46 | 59.77 | +31.5% |
+| | 2 | 82.89 | 104.59 | +26.2% |
+| | 4 | 131.46 | 163.33 | +24.2% |
+| | 6 | 173.32 | 212.87 | +22.8% |
+| | 8 | 209.61 | **257.50** | +22.8% |
+| | | | | **+25.5%** geomean |
+| Prose | 1 | 31.78 | 39.91 | +25.6% |
+| | 2 | 56.44 | 58.88 | +4.3% |
+| | 4 | 67.68 | 91.50 | +35.2% |
+| | 6 | 92.24 | 107.99 | +17.1% |
+| | 8 | 109.96 | **137.38** | +24.9% |
+| | | | | **+21.0%** geomean |
+
+**Across all 15 cells: +25.2% geometric mean.** Every stream completed at every
+level in every workload.
+
+### Two things this adds beyond the headline
+
+**It is independent confirmation that the gain is not code-only.** §10 measured
+prose with `bench/ctxsweep.py` at +27.6%; this measures prose under concurrency,
+with a different harness and a different workload shape, at +21.0%. Two
+instruments, same conclusion.
+
+**It beats the earlier tuned build on every workload**, and by the largest
+margin on the one that was weakest:
+
+| | earlier tuned build | tuned v2 |
+|---|---:|---:|
+| Code | +23.8% | +29.2% |
+| Structured | +23.6% | +25.5% |
+| Prose | +14.0% | **+21.0%** |
+| All 15 cells | +20.4% | **+25.2%** |
+
+### Caveats
+
+- **One run per cell, one boot per arm.** The published baseline was measured
+  the same way, so the comparison is fair, but neither side has repeats.
+- **The prose 2-stream cell reads +4.3%**, well outside its neighbours (+25.6%,
+  +35.2%). That is a single-sample outlier and should not be quoted alone.
+- This compares `tuned v2` **with prefix caching on** against the published
+  recipe as originally measured. It is the end-to-end delta of everything
+  changed since, not an isolated kernel result.
+- `tuned v2` is not reproducible from this repository; `build/` builds the
+  `tuned` arm. See §10.

@@ -27,13 +27,17 @@ the full ladder. Everything else, with its conditions, is in
 
 > **Update, 2026-09-09.** Two findings that change how to read the chart above.
 >
-> **Prefix caching matters far more than any tuning here.** That chart was
-> measured with prefix caching on; `serve.sh` has defaulted it *off* since
-> 2026-09-07 (RESULTS.md §8). Turning it off costs up to **26x** on a repeat
-> turn at 259k context and **34%** on real multi-turn tasks, because every turn
-> re-reads the whole conversation. Decode rate is unaffected, so every tok/s
-> figure in this README still holds — but if you are running an agent, read
-> [RESULTS.md §11](RESULTS.md) before accepting the default.
+> **Prefix caching is back on by default, and it matters more than any tuning
+> here.** It was disabled on 2026-09-07 after `align` mode returned wrong-topic
+> completions (RESULTS.md §8). That decision was validated against decode
+> benchmarks, which send a fresh prompt every time and so cannot see what
+> caching is for. Measured on the shape that actually failed — a shared prefix
+> extended by new tokens each turn — 16 turns came back correct, and turn time
+> went from tracking total context (~145 s at 241k) to a **flat ~18 s**. The
+> root cause was never found, so this is "not reproduced", not "fixed":
+> `bench/suffix_gate.py` is in here so you can check it against your own
+> workload. Decode rate is unaffected either way, so every tok/s figure in this
+> README still holds. [RESULTS.md §11](RESULTS.md).
 >
 > **The gains are not code-only.** A tuned build measured the same day reaches
 > +31.7% on code, **+34.2% on thinking**, and +27.6% on prose, with accepted
@@ -282,8 +286,9 @@ scripts/weight_utils.nogds.py   FAST_LOAD's patched vLLM loader see Traps, scrip
 bench/ctxsweep.py               context ladder, the headline instrument
                                                             --lengths --reps --temperature
 bench/plotsweep.py              rebuild the ladder chart    positional jsonl files, --out
-bench/cache_gate.py             prefix-caching correctness gate: repeat, interleave,
-                                on-topic marker. Run it before trusting caching   §11
+bench/cache_gate.py             prefix-caching gate: repeat, interleave, on-topic     §11
+bench/suffix_gate.py            prefix-caching gate on the shape that actually failed:
+                                shared prefix + growing suffix, the agent pattern   §11
 data/ctxsweep-*.csv/.jsonl      the sweeps behind every table above
 data/ctxsweep-{code,prose,thinking}-*-20260909.jsonl
                                 the three-recipe comparison by output type         §10

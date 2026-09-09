@@ -487,18 +487,58 @@ change decode**, on the stock image either — it only removes the re-read. Belo
 about 4k the two are equivalent, and at 2k caching is marginally slower
 (0.9x), which is the cache lookup costing more than the prefill it saves.
 
-**This does not fully clear the 2026-09-07 failure, and should not be read as
-doing so.** The gate exercises identical repeated prompts and alternating
-whole prompts. The original failure was seen on a different shape: a shared
-prefix of about 100k tokens extended by about 40k *new* tokens — a growing
-suffix, which is also the shape an agent actually produces and the case where
-align-mode chunk boundaries are most likely to matter. The gate does not
-reproduce that pattern, so it cannot prove that pattern is fixed.
+Neither of those is the shape that failed, though. The 2026-09-07 report was a
+shared prefix of about 100k tokens extended by about 40k *new* tokens — a
+growing suffix, which is what an agent actually produces and the case where
+align-mode chunk boundaries are most likely to matter. So the gate above tests
+adjacent patterns, not the failing one.
 
-Accordingly `PREFIX_CACHE` **stays 0 by default** in `serve.sh` until the
-growing-suffix case is tested directly. The honest summary is: caching is worth
-up to 26x on repeat turns and 34% on real tasks; five gate runs across two
-images found no corruption; and the specific pattern that originally failed has
-not yet been re-tested. Anyone running an agent workload should weigh those
-three facts together rather than take the current default as a considered
-recommendation for their case.
+### The growing-suffix gate
+
+`bench/suffix_gate.py` reproduces that shape directly. It builds one long
+prefix, then appends a block per turn carrying a fresh marker, and asks only
+about the newest marker. A stale-state failure appears as an answer naming an
+older marker, or naming none. Two conversations are interleaved over the same
+prefix so the cache has to evict and restore, which a single growing
+conversation never forces.
+
+Published image, caching on, two interleaved conversations:
+
+| Turn | Prompt tokens | Time | Correct marker |
+|---:|---:|---:|:--:|
+| 1 X | 110,248 | 60.99 s | yes |
+| 1 Y | 110,248 | 17.89 s | yes |
+| 2 | 136,448 | 18.08 / 17.60 s | yes |
+| 3 | 162,648 | 17.55 / 17.56 s | yes |
+| 4 | 188,848 | 18.30 / 18.28 s | yes |
+| 5 | 215,048 | 18.20 / 18.20 s | yes |
+| 6 | 241,248 | 18.96 / 18.94 s | yes |
+
+**12 turns, every one correct.** An earlier run at 40k growth added 4 more
+correct turns at 182k and 252k tokens before hitting the context window, for
+**16 growing-suffix turns with no corruption**.
+
+The timing is the number that matters for an agent. The first turn cost 61 s to
+build the cache; **every later turn cost about 18 s and did not grow with
+depth**, from 110k to 241k tokens. That 18 s is real work — each turn adds 15k
+genuinely new tokens to prefill. With caching off the same turn tracks total
+context instead, and a cold prefill at 241k is roughly 145 s.
+
+So on a growing conversation, caching turns **~145 s per turn into ~18 s per
+turn, and stops it growing with depth.** That is a better result than the 21x
+headline above, because it is the real access pattern rather than an identical
+repeat.
+
+### The default is now 1
+
+`PREFIX_CACHE` defaults to `1` in `serve.sh` as of 2026-09-09. Set it to `0` if
+you would rather not take the risk described below; you will pay for it in turn
+latency.
+
+**The honest statement of what is known.** The root cause of the 09-07 failure
+was never found. Sixteen turns on the failing pattern plus five `cache_gate.py`
+rounds across two images found no corruption, but that is "not reproduced",
+not "fixed", and it is not a soak. The original bug was intermittent, which is
+exactly why it survived the testing that preceded it. Anyone depending on
+exact output should run `bench/suffix_gate.py` against their own workload
+rather than taking this default on trust.

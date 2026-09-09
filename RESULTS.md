@@ -406,11 +406,12 @@ benchmark here proves output quality is unchanged.
 
 ## 11. Prefix caching, re-examined (2026-09-09)
 
-§8 disabled prefix caching on 2026-09-07 because `align` mode returned
-wrong-topic completions. That decision was validated against decode benchmarks,
-which send a fresh prompt every time. **Those benchmarks are structurally
-incapable of measuring what caching is for**, so §8 measured the cost of the
-change at roughly zero and adopted it. This section corrects that.
+`PREFIX_CACHE` defaults to `1`. This section is the measurement behind that,
+and supersedes §8, which set it to `0` on 2026-09-07.
+
+Caching only shows up on a repeated prefix, so a decode ladder — which sends a
+fresh prompt every rung — cannot measure it. The numbers below come from
+repeat-prompt and multi-turn workloads instead.
 
 ### What it costs to leave caching off
 
@@ -525,16 +526,14 @@ turn, and stops it growing with depth.** That is a better result than the 21x
 headline above, because it is the real access pattern rather than an identical
 repeat.
 
-### The default is now 1
+### Known limits of this evidence
 
-`PREFIX_CACHE` defaults to `1` in `serve.sh` as of 2026-09-09. Set it to `0` if
-you would rather not take the risk described below; you will pay for it in turn
-latency.
+Caching forces vLLM's Mamba cache into `align` mode for this model, and that
+mode produced wrong-topic completions once, on 2026-09-07, with no cause found.
+It has not reproduced across 16 growing-suffix turns and 5 `cache_gate.py`
+rounds on two images — but that is "not reproduced", not "fixed", and it is not
+a soak.
 
-**The honest statement of what is known.** The root cause of the 09-07 failure
-was never found. Sixteen turns on the failing pattern plus five `cache_gate.py`
-rounds across two images found no corruption, but that is "not reproduced",
-not "fixed", and it is not a soak. The original bug was intermittent, which is
-exactly why it survived the testing that preceded it. Anyone depending on
-exact output should run `bench/suffix_gate.py` against their own workload
-rather than taking this default on trust.
+Run `bench/suffix_gate.py` against your own workload if you depend on exact
+output. Set `PREFIX_CACHE=0` to avoid `align` mode entirely, at the cost of
+turn latency.

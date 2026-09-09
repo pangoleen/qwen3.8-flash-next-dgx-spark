@@ -45,6 +45,39 @@ step fails, stop and report rather than improvising around it.
    if it is well under that, report the full server startup log rather than
    re-running blind — the two most common causes are `MODE=nvfp4` (no hybrid
    side layers) and `SEQS` left too low under concurrent load.
-10. Finish with a summary: image ID, boot time, whether `FAST_LOAD` was used
-    and whether it OOM-killed (see README, Traps, before turning it on), and
-    the two sweep rows.
+10. Record the baseline: image ID, boot time, whether `FAST_LOAD` was used and
+    whether it OOM-killed (see README, Traps, before turning it on), and the
+    two sweep rows. Stop here if the stock recipe is all that is wanted.
+
+## Optional: build the tuned image (+22% decode, +29% with thinking on)
+
+Only after step 10 has a working baseline and its numbers recorded — you want a
+before to compare against.
+
+11. Read `build/README.md`. It explains the four overlays in plain terms and
+    what each one costs to build.
+12. From this repository, run `./build/build.sh`. It layers four overlays on
+    the `qwen38-flash-dgx` image from step 3 and tags the result
+    `qwen38-flash-tuned`. Expect roughly 20 minutes; overlay 02 compiles a CUDA
+    kernel for `sm_121a`, and overlay 01 runs 19 unit tests as a build gate.
+    Report the final image ID.
+    - If a patch step fails with a SHA256 mismatch, **stop and report it**. It
+      means the base image's vLLM differs from the one these overlays were
+      measured against. Do not edit the expected hash to force it through: the
+      published numbers would no longer apply to what you built. `build/README.md`
+      explains how to re-anchor deliberately.
+13. Stop the running server (`./stop.sh`), then launch the tuned image:
+    `IMAGE=qwen38-flash-tuned MODE=hybrid MTP=3 GPU_MEM=0.80 PORT=18300 ./serve.sh`.
+    Only one of these servers can run at a time.
+14. Re-run the same two sweep rungs from step 9 against the tuned image and put
+    the two tables side by side. Expect roughly +20% or better on generation at
+    both rungs. If it is not faster, report the startup log rather than
+    re-running: the usual cause is the overlays being present but not switched
+    on, so check that the launch enabled `VLLM_PLE_STAGED`, the draft
+    vocabulary, and `use_local_argmax_reduction`, per `build/README.md`.
+15. If prefix caching matters for your workload, run
+    `python3 bench/suffix_gate.py "$SPARK_BASE_URL" "$SPARK_MODEL" 60000 15000 8`.
+    It grows a shared prefix turn by turn and checks every answer. Report the
+    pass/fail line and the median turn time.
+16. Finish with a summary: both image IDs, both sweep tables, the measured
+    gain, and the gate result if you ran it.

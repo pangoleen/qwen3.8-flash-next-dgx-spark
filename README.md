@@ -39,27 +39,31 @@ For the same nine panels on the tuned build see
 `charts/ctxsweep-tunedv2-cacheon.png`, and for all three side by side,
 `charts/threeway-comparison.png`.*
 
-> **Update, 2026-09-09.** Two findings that change how to read the chart above.
->
-> **Prefix caching is back on by default, and it matters more than any tuning
-> here.** It was disabled on 2026-09-07 after `align` mode returned wrong-topic
-> completions (RESULTS.md §8). That decision was validated against decode
-> benchmarks, which send a fresh prompt every time and so cannot see what
-> caching is for. Measured on the shape that actually failed — a shared prefix
-> extended by new tokens each turn — 16 turns came back correct, and turn time
-> went from tracking total context (~145 s at 241k) to a **flat ~18 s**. The
-> root cause was never found, so this is "not reproduced", not "fixed":
-> `bench/suffix_gate.py` is in here so you can check it against your own
-> workload. Decode rate is unaffected either way, so every tok/s figure in this
-> README still holds. [RESULTS.md §11](RESULTS.md).
->
-> **The gains are not code-only.** Measured the same day: **+34.2% on
-> thinking**, +31.7% on code, +27.6% on prose, with accepted tokens per pass
-> unchanged — so the win is cheaper passes, not better guessing, which is why it
-> survives on prose where guessing is weak. Real tasks: 138.3 s -> 96.8 s, or
-> 63.7 s with caching on. The `build/` overlays reproduce the +22% arm of that;
-> the strongest column adds four more overlays that are not in here yet. See
-> [RESULTS.md §10](RESULTS.md) and `charts/threeway-comparison.png`.
+### What the `build/` overlays add (2026-09-09)
+
+Measured against `serve.sh` on the stock image, same box, same day, same
+harness:
+
+| Output type | stock | with `build/` | gain |
+|---|---:|---:|---:|
+| Code | 43.1 tok/s | 52.6 | +22.0% |
+| Code with thinking on | 40.0 tok/s | 51.6 | **+28.9%** |
+| Prose | 24.7 tok/s | 28.9 | +16.9% |
+
+**The gain holds on every output type, and thinking gains most** — which
+matters, because a coding agent spends most of its tokens thinking rather than
+emitting final code. Accepted tokens per pass is unchanged (3.64 to 3.57), so
+this is not better speculation; each pass simply costs less.
+
+A further four overlays, not in this repository, reach +31.7% / +34.2% / +27.6%
+on the same three rows. Both are in [RESULTS.md §10](RESULTS.md), with
+`charts/threeway-comparison.png`.
+
+**Prefix caching is on by default** (`PREFIX_CACHE=1`). On a growing
+conversation it holds time-per-turn flat at ~18 s from 110k to 241k tokens,
+against ~145 s for the same turn with it off. Decode rate is unaffected either
+way. [RESULTS.md §11](RESULTS.md), and `bench/suffix_gate.py` checks it against
+your own workload.
 
 ## Requirements
 
@@ -354,12 +358,11 @@ AGENT_SETUP.md                  paste into a coding agent on the Spark to do the
   against any of these recipes. The `build/` overlays set BF16 recurrent state,
   which **changes generation hashes** against the stock recipe — a precision
   change, not a lossless one.
-- **The prefix-caching correctness story is incomplete.** The 2026-09-07
-  failure's root cause was never found. Sixteen turns on the failing pattern
-  plus five `cache_gate.py` rounds across two images found no corruption, but
-  that is "not reproduced", not "fixed", and it is not a soak. Run
-  `bench/suffix_gate.py` against your own workload rather than taking the
-  default on trust.
+- **Prefix caching has one unexplained failure behind it.** `align` mode
+  produced wrong-topic completions once, on 2026-09-07, cause not found. It has
+  not reproduced across 16 growing-suffix turns and 5 gate rounds on two
+  images, and is on by default — but verify with `bench/suffix_gate.py` if you
+  depend on exact output.
 - **`FAST_LOAD` is experimental**, not the default, with a fix deployed but not
   yet proven across many boots.
 - **Weights are not included** and carry Qwen's own licence.

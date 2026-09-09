@@ -1,34 +1,65 @@
-# Rebuilding the tuned image
+# Building the tuned image
 
-Four overlays on top of the stock image. Together they are the `tuned` arm in
-[RESULTS.md §10](../RESULTS.md): **+22.0% decode on code, +28.9% on thinking,
-+16.9% on prose**, and four real tasks in 102.3 s against 138.3 s.
+## What this does, in short
 
-```
-qwen38-flash-dgx                 you build this first, from blazux upstream
-  01-draft-vocab                 reduced MTP draft head
-    02-det-topk                  deterministic QSA top-k CUDA extension
-      03-staged-ple              stage the FP8 PLE read before forward
-        04-gdn-flashinfer        FlashInfer GDN backend on sm121
-```
+The stock image works, but it leaves speed on the table in four places. This
+directory fixes all four by adding layers on top of that image — it does not
+replace or rebuild it. You run one script and get a faster image out.
+
+**Result:** +22.0% on code, +28.9% on code with thinking on, +16.9% on prose,
+and four real coding tasks in 102.3 s instead of 138.3 s.
+([RESULTS.md §10](../RESULTS.md).)
+
+## How to build it
 
 ```bash
 ./build.sh                       # -> qwen38-flash-tuned
-./build.sh --stop-at 3           # stop after staged-ple
 ```
 
-## What each overlay does
+Then serve that image instead of the stock one:
 
-| Overlay | Change | Why it pays |
-|---|---|---|
-| `01-draft-vocab` | MTP draft argmax runs over a 65,536-row slice of the LM head | The drafter reads a 1.27 GB BF16 head once per draft step. Greedy drafting only needs an argmax, and a draft outside the slice is rejected by the target like any other bad draft. Bandwidth, not accuracy. |
-| `02-det-topk` | Deterministic QSA `persistent_topk` CUDA extension | Order-stable top-k. Vendored, Apache-2.0. |
-| `03-staged-ple` | The FP8 PLE mmap read is staged into a fixed buffer **before** `forward()` | This is the one that unlocks the rest. A synchronous host-to-device copy inside `forward()` cannot be captured into a CUDA graph, which is why the stock image is limited to PIECEWISE. Move the read out and `FULL_DECODE_ONLY` capture becomes legal. |
-| `04-gdn-flashinfer` | FlashInfer GDN backend selection on sm121 | Backport of the merged vLLM PR. |
+```bash
+IMAGE=qwen38-flash-tuned MODE=hybrid MTP=3 GPU_MEM=0.80 ./serve.sh
+```
 
-Accepted tokens per pass is unchanged across all of these (3.64 -> 3.57 on
-code, RESULTS.md §10). The gain is not better drafting — each speculative pass
-costs less. That is why it survives on prose, where drafting is weak.
+You need the stock `qwen38-flash-dgx` image first (README Quickstart), a GB10,
+and about 20 minutes — one overlay compiles a CUDA kernel.
+
+## The four changes
+
+Each is one Docker layer on the one before:
+
+**1. `01-draft-vocab` — stop reading the whole vocabulary to guess one token.**
+Speculative decoding uses a small "draft" model to guess the next few tokens,
+which the real model then checks. That drafter reads a 1.27 GB table every
+guess, to pick from 248,000 possible tokens. It only ever needs the single
+best one, and in practice that is almost always a common token. So this
+restricts the guess to the 65,536 most frequent, and reads a quarter of the
+table. If the right token was outside that set, the guess is wrong and the real
+model rejects it — exactly as it rejects any other bad guess. **The output the
+server produces cannot change; only the guessing gets cheaper.**
+
+**2. `02-det-topk` — make one attention kernel order-stable.** Vendored,
+Apache-2.0, so the same input gives the same output.
+
+**3. `03-staged-ple` — the one that unlocks the rest.** This model keeps a
+44 GiB lookup table on disk and reads from it mid-calculation. A read from disk
+in the middle of a calculation cannot be recorded into a CUDA graph — a
+pre-recorded replay of the GPU work that removes most per-step overhead. So the
+stock image can only record fragments. Move that read to *before* the
+calculation starts, into a fixed buffer, and the whole decode step can be
+recorded. Every token generated after that is cheaper.
+
+**4. `04-gdn-flashinfer` — use the faster attention backend on this chip.**
+A backport of a merged vLLM pull request.
+
+## Why the gain shows up on prose too
+
+The drafter's hit rate does not change — 3.64 accepted guesses per pass before,
+3.57 after. So this is not better guessing, which would only help predictable
+text like code. Each pass just costs less, which helps everything. That is why
+prose improves as well, and why thinking improves most: a thinking turn is
+thousands of small decode steps, and the per-step overhead is what got removed.
 
 ## Requirements
 

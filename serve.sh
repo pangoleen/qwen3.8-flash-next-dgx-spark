@@ -15,27 +15,17 @@
 #   MODE=nvfp4        nvfp4 = the checkpoint as published (side layers bf16)
 #                     hybrid = side layers in blockwise fp8: +20% decode, +15-20% KV, same
 #                     tournament score. Needs the one-time scripts/prepare-hybrid.sh
-#   PREFIX_CACHE=1    On for an agent workload, and the difference is large. Turning it off
-#                     makes warm TTFT equal cold TTFT from ~65k up: every turn re-reads the
-#                     whole conversation. On a growing conversation measured at 110k-241k
-#                     tokens, each turn costs ~18 s with caching on and flat with depth,
-#                     against a cold prefill of ~145 s at the top of that range. Decode rate
-#                     is unaffected either way (42.8 vs 41.4 tok/s), so this buys turn
-#                     latency, not throughput. Below ~4k the two are equivalent and at 2k
-#                     caching is marginally slower. See RESULTS.md §11.
-#
-#                     History, because this default flipped twice. Turning caching on forces
-#                     vLLM's Mamba cache into 'align' mode for this model (config.py:605), and
-#                     on 2026-09-07 align mode returned completions that ignored the prompt.
-#                     That is why this was 0 from 09-07 to 09-09. The four candidate upstream
-#                     fixes (unmerged vLLM PRs 53798/54076/54713/55390) did not change the
-#                     failure at all. What changed the decision was testing the right shape:
-#                     bench/suffix_gate.py reproduces the failing pattern - a shared prefix
-#                     extended by new tokens each turn - and 16 such turns across two
-#                     interleaved conversations returned correct output, as did 5 rounds of
-#                     bench/cache_gate.py on two images. The root cause was never found, so
-#                     this is "not reproduced on the failing pattern", not "fixed". Set 0 if
-#                     you would rather not take that risk; you will pay it in turn latency.
+#   PREFIX_CACHE=1    Repeated prefixes skip the prefill. On a growing conversation this
+#                     holds time-per-turn flat at ~18 s from 110k to 241k tokens; with it
+#                     off the same turn tracks total context and costs ~145 s at 241k.
+#                     Decode rate is unaffected either way (42.8 vs 41.4 tok/s) - this buys
+#                     turn latency, not throughput. Below ~4k the two are equivalent.
+#                     Caveat: this forces vLLM's Mamba cache into 'align' mode for this
+#                     model (config.py:605), which produced wrong-topic completions once,
+#                     on 2026-09-07, with no cause found. It has not reproduced across 16
+#                     growing-suffix turns and 5 gate rounds on two images. Verify with
+#                     bench/suffix_gate.py before depending on exact output; set 0 to avoid
+#                     align mode entirely, at the cost of turn latency. RESULTS.md §11.
 #   EXACT_TOPK=1      1 = exact, deterministic QSA top-k (identical output at temperature 0;
 #                     costs ~10-40% on long prefills). 0 = stock kernel (faster, non-deterministic)
 #   PORT=18300        host port for the API

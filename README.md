@@ -5,25 +5,39 @@ follow-ups are posted first.
 
 The 125B-total / 6B-active Flash-Next does not fit in 128 GB as published. This
 is how it runs on a single Spark anyway, how fast, and the knobs that take it
-from 33 to 45+ tok/s. The serving route is blazux's `qwen3.8-Flash-DGX` (the
+from 33 tok/s to 52. The serving route is blazux's `qwen3.8-Flash-DGX` (the
 official vLLM Flash-Next image plus a patch layer that memory-maps the 44 GiB
-n-gram table from NVMe); this repository adds the tuned launch script, the
-sweep harness, the measurements, and the fix for a boot that was 2.5x slower
-than it needed to be.
+n-gram table from NVMe); this repository adds the tuned launch script, four
+build overlays, the sweep harness, the measurements, and the fix for a boot
+that was 2.5x slower than it needed to be.
 
-| Generation, 325 tokens to 259k | 8 concurrent streams (code) | Cold first token at 259k |
-|---|---|---|
-| **41-44 tok/s, flat** | **218 tok/s** aggregate, sparkDash | 158 s |
+| | Generation, 325 tokens to 259k | Real task, 4 coding/thinking | 8 streams (code) |
+|---|---|---|---|
+| `serve.sh` alone | **41-44 tok/s**, flat | 138 s | **218 tok/s** aggregate |
+| plus `build/` overlays | **52 tok/s** mean, flat | **102 s** | not measured |
 
-Conditions: hybrid mode (fp8 side layers), MTP 3, `GPU_MEM=0.80`, temperature 0,
-thinking off, decode only (time to first token excluded), 4 reps per rung, one
-boot. The concurrency figure is measured with
-[MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash), not this
-repository's own scripts — see Concurrency below for why, and RESULTS.md §2 for
-the full ladder. Everything else, with its conditions, is in
-[RESULTS.md](RESULTS.md).
+Both rows are this repository. The first is the launch script on the stock
+image, which is what Quickstart gives you. The second adds the four overlays in
+[`build/`](build/README.md) — a reduced draft head, a deterministic top-k
+kernel, BF16 recurrent state, and staging the FP8 table read out of the forward
+pass so full-decode CUDA graphs can capture. That last one is what makes the
+rest possible.
+
+Conditions: hybrid mode (fp8 side layers), MTP 3, `GPU_MEM=0.80`, temperature 0
+(0.6 for the ladder), thinking off, decode only for the tok/s columns (time to
+first token excluded), 4 reps per rung, one boot. The concurrency figure is
+measured with [MiaAI-Lab/sparkDash](https://github.com/MiaAI-Lab/sparkDash),
+not this repository's own scripts — see Concurrency below for why. The
+`build/` row was measured with prefix caching off; decode rate is unaffected by
+that flag (RESULTS.md §11), the task time is not. Everything else, with its
+conditions, is in [RESULTS.md](RESULTS.md).
 
 ![Flash-Next context ladder, thinking off](charts/ctxsweep-flashnext-thinking-off.png)
+
+*The stock recipe, prefix caching on — what `serve.sh` gives you out of the box.
+For the same nine panels on the tuned build see
+`charts/ctxsweep-tunedv2-cacheon.png`, and for all three side by side,
+`charts/threeway-comparison.png`.*
 
 > **Update, 2026-09-09.** Two findings that change how to read the chart above.
 >
@@ -39,13 +53,13 @@ the full ladder. Everything else, with its conditions, is in
 > workload. Decode rate is unaffected either way, so every tok/s figure in this
 > README still holds. [RESULTS.md §11](RESULTS.md).
 >
-> **The gains are not code-only.** A tuned build measured the same day reaches
-> +31.7% on code, **+34.2% on thinking**, and +27.6% on prose, with accepted
-> tokens per pass unchanged — so the win is cheaper passes, not better
-> guessing, which is why it survives on prose. Real tasks: 138.3 s -> 96.8 s,
-> or 63.7 s with caching on. See [RESULTS.md §10](RESULTS.md) and
-> `charts/threeway-comparison.png`. Those builds are **not yet reproducible
-> from this repository**; §10 says exactly why.
+> **The gains are not code-only.** Measured the same day: **+34.2% on
+> thinking**, +31.7% on code, +27.6% on prose, with accepted tokens per pass
+> unchanged — so the win is cheaper passes, not better guessing, which is why it
+> survives on prose where guessing is weak. Real tasks: 138.3 s -> 96.8 s, or
+> 63.7 s with caching on. The `build/` overlays reproduce the +22% arm of that;
+> the strongest column adds four more overlays that are not in here yet. See
+> [RESULTS.md §10](RESULTS.md) and `charts/threeway-comparison.png`.
 
 ## Requirements
 

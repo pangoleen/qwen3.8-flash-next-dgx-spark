@@ -390,20 +390,16 @@ budgets, one stable output hash per cell.
 
 **30.0% less wall time**, with the two thinking tasks improving most.
 
-### What is not reproducible from this repository
+### Rebuilding these arms
 
-The `tuned` and `tuned v2` arms run locally built images that are **not
-published**, so a clone cannot rebuild them today. Two separate obstacles:
+The `tuned` arm is reproducible: `build/` holds its four overlays and a
+`build.sh` that applies them to the stock image. See
+[build/README.md](build/README.md) for what each one does and what it needs.
 
-- The draft-vocabulary patch is `AGPL-3.0-or-later`, copyright MiaAI Lab. This
-  repository is MIT. That file cannot be included here, and AGPL §13 means
-  serving a patched build may carry obligations of its own. The vocabulary
-  *list* is generated locally from Apache-2.0 vLLM source and is not the
-  blocker; the patch code is.
-- The remaining overlays are Apache-2.0 and publishable, and are being prepared
-  separately.
-
-Treat this section as a measured result on one box, not a recipe you can run.
+The `tuned v2` arm is **not** yet. It adds four further overlays — compacted
+QSA, FP8 MTP experts, an FP8 draft head, and async metadata — which are not in
+this repository. Its column is a measured result on one box, not a recipe you
+can run.
 Also note the BF16 recurrent-state change alters generation hashes against the
 published recipe: it is a precision change, not a lossless one, and no task
 benchmark here proves output quality is unchanged.

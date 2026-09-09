@@ -100,12 +100,10 @@ and RESULTS.md §10 says so.
 
 Everything here is Apache-2.0.
 
-- `01-draft-vocab` is an independent implementation. See its `NOTICE.md`:
-  **MiaAI Lab** is credited for the reduced-draft-vocabulary technique as prior
-  art, and the **FR-Spec** paper for the underlying idea. MiaAI Lab's own
-  implementation is AGPL-3.0-or-later and is **not** used, copied, or adapted
-  here; this code was written from vLLM's `use_local_argmax_reduction` interface
-  and its Apache-2.0 source.
+- `01-draft-vocab` was written from vLLM's `use_local_argmax_reduction`
+  interface and its Apache-2.0 source. Credit for the reduced-draft-vocabulary
+  technique goes to **MiaAI Lab** as prior art, and to the **FR-Spec** paper for
+  the underlying idea. See its `NOTICE.md`.
 - `02-det-topk` vendors work by **Jürgen Schmied** under Apache-2.0. Keep
   `vendor/LICENSE` and `vendor/NOTICE` with it.
 - `03-staged-ple` and `04-gdn-flashinfer` extend Apache-2.0 vLLM source;

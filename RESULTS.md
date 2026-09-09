@@ -469,6 +469,24 @@ fluent answers about the wrong thing.
 | `tuned v2` | 2 | 2 | All passed |
 | `published` (stock) | 1 | 3 | All passed |
 
+### The same measurement on the stock image
+
+The numbers above come from a locally built image. This repository ships the
+stock one, so it gets its own measurement. Six rungs, 4 reps, one flag
+changed. Data: `data/ctxsweep-code-published{,-cacheon}-20260909.jsonl`.
+
+| Rung | warm TTFT off | warm TTFT on | end-to-end off | end-to-end on | Factor |
+|---:|---:|---:|---:|---:|---:|
+| 8,192 | 4.62 s | 1.29 s | 23.0 | 34.8 | 1.5x |
+| 32,768 | 18.09 s | 1.66 s | 8.9 | 32.0 | 3.6x |
+| 131,072 | 75.39 s | 1.64 s | 2.5 | 27.5 | 11.1x |
+| 259,584 | 157.88 s | 2.55 s | 1.3 | 27.2 | **21.1x** |
+
+Mean decode across the same rungs: 42.8 tok/s off, 41.4 on. **The flag does not
+change decode**, on the stock image either — it only removes the re-read. Below
+about 4k the two are equivalent, and at 2k caching is marginally slower
+(0.9x), which is the cache lookup costing more than the prefill it saves.
+
 **This does not fully clear the 2026-09-07 failure, and should not be read as
 doing so.** The gate exercises identical repeated prompts and alternating
 whole prompts. The original failure was seen on a different shape: a shared

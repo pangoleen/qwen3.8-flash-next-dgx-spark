@@ -1,0 +1,12 @@
+{
+  "strategy": "vllm-source-frequency-then-low-token-id-fill",
+  "files": 2473,
+  "corpus_sha256": "e554b38b832e9574afbec229b8ef24f34f0bbe04ba8277fb5e742cda67fe5778",
+  "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+  "source_distinct_tokens": 30739,
+  "source_tokens": 9370935,
+  "selected_tokens": 65536,
+  "added_tokens": 33,
+  "training_coverage": 1.0,
+  "vocab_sha256": "887e255f3703204bc334e8013e1e7d0a1039cf2321edda3307e027905e4a6a9a"
+}

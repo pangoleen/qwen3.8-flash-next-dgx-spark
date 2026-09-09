@@ -1,0 +1,13 @@
+{
+  "candidate": "flashinfer-gdn-prefill-sm121",
+  "created_at": "2026-09-08",
+  "parent_image": "qwen38-flash-perf-vocab65-det-staged-v2:20260908",
+  "parent_image_id": "sha256:91161a77479af0cc59030452547165ec519c594fc03aface4dddc9d745d2e453",
+  "candidate_image": "qwen38-flash-perf-gdn-fi-sm121:20260908",
+  "candidate_image_id": "sha256:42a55a5ce023823432a0df34cc2912c8663aeef24d5f8c6e516bb049315b4310",
+  "upstream_pr": "https://github.com/vllm-project/vllm/pull/55715",
+  "upstream_commit": "f6326f53bda46898a331c2d24500332c285d9a2b",
+  "source_sha256_before": "81b4dcd0952492375c93bffc2cdf45f10b45ab5e117f2e1d949a147d144e64f0",
+  "source_sha256_after": "dec15cb5f2e8fd7d4b9e1d0387b1da86206a68ed18ef06d5ad95fb0b30bfcdc4",
+  "scope": "Enable the existing FlashInfer GDN prefill backend on SM12x, head_k_dim=128, CUDA>=13 only"
+}

@@ -1,0 +1,10 @@
+qwen38-flash-next-gb10
+Copyright 2026 Jürgen Schmied
+
+Licensed under the Apache License, Version 2.0 (see LICENSE). Any use is permitted
+under its terms; please keep the attribution (this notice and the LICENSE file) when
+redistributing or building on the notes, tools, measurements or patches.
+
+Parts of `patches/` are modifications of vLLM (https://github.com/vllm-project/vllm,
+Apache License 2.0) and of upstream pull requests credited in their file headers and in
+`patches/upstream-candidates/README.md`; those remain under their original licenses.

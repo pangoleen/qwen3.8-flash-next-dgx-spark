@@ -292,6 +292,13 @@ charts/*.png                    regenerated from data/ by bench/plotsweep.py
 charts/threeway-comparison.png  published vs tuned vs tuned v2                     §10
 charts/ctxsweep-tunedv2-cacheon.png
                                 tuned v2 with caching on, same panels as the top   §11
+build/build.sh                  rebuild the tuned image: 4 overlays on the stock one
+build/README.md                 what each overlay does, and why it fails loudly    §10
+build/01-draft-vocab/           reduced MTP draft head (independent implementation)
+build/02-det-topk/              deterministic QSA top-k CUDA extension (vendored)
+build/03-staged-ple/            stages the FP8 PLE read out of forward() - this is
+                                what makes FULL_DECODE_ONLY graphs capturable
+build/04-gdn-flashinfer/        FlashInfer GDN backend on sm121
 RESULTS.md                      every table, with its conditions, and the measuring lessons
 AGENT_SETUP.md                  paste into a coding agent on the Spark to do the whole setup
 ```

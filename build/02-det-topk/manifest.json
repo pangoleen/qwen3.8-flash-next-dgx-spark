@@ -1,0 +1,22 @@
+{
+  "name": "qwen38-flash-det-topk-overlay",
+  "prepared_at": "2026-09-07",
+  "source_repository": "https://github.com/jschmied/qwen38-flash-next-gb10",
+  "source_commit": "e0ef69d4f5575dad00d34e05479eaf4c6547bace",
+  "upstream_pull_request": "https://github.com/vllm-project/vllm/pull/55122",
+  "default_base_image": "qwen38-flash-perf-vocab65:20260907",
+  "target_cuda_arch": "121a",
+  "extension_path": "/opt/llm/kernel-det/_C_det.so",
+  "qsa_path": "/usr/local/lib/python3.12/dist-packages/vllm/models/qwen3_8_flash_next/nvidia/ops/qsa.py",
+  "runtime_environment": {
+    "VLLM_QSA_EXACT_TOPK": "0",
+    "VLLM_QSA_DET_TOPK": "1",
+    "VLLM_QSA_DET_LIB": "/opt/llm/kernel-det/_C_det.so"
+  },
+  "expected_activation_log": "QSADET active: /opt/llm/kernel-det/_C_det.so",
+  "gpu_validation": {
+    "script": "/opt/llm/kernel-det/source/vendor/kernel-det/test_det.py",
+    "expected_final_line": "FAILS: 0"
+  }
+}
+

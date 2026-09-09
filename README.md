@@ -191,8 +191,8 @@ Full tables, including prose and the 256-token setting, are in RESULTS.md §2.
 ## Reproducing these numbers
 
 `bench/` needs only the standard library plus matplotlib for the charts
-(`pip install -r bench/requirements.txt`). Both scripts write one jsonl per run
-into `results/`, which is git-ignored.
+(`pip install -r bench/requirements.txt`). The sweep scripts write one jsonl per
+run into `results/`, which is git-ignored.
 
 ```bash
 cp .env.sample .env && source .env   # SPARK_BASE_URL, SPARK_MODEL, SNAPSHOT_SHA
@@ -206,6 +206,17 @@ python3 bench/plotsweep.py results/ctxsweep-recommended-*.jsonl \
 The sweep's ceiling rung pays a ~160 s cold prefill before a single token comes
 out, once per repeat. `bench/plotsweep.py` rebuilds the chart from the jsonl it
 is given; a chart that cannot be rebuilt that way does not ship.
+
+Before trusting prefix caching on your own workload, run both gates. They print
+what they check and exit non-zero on any corruption:
+
+```bash
+python3 bench/cache_gate.py  "$SPARK_BASE_URL" "$SPARK_MODEL"          # repeat + interleave
+python3 bench/suffix_gate.py "$SPARK_BASE_URL" "$SPARK_MODEL" 60000 15000 8
+```
+
+The second is the one that matters: it grows a shared prefix by new tokens each
+turn, which is what an agent does and what failed here on 2026-09-07.
 
 ## Thinking and tool calling
 
@@ -275,6 +286,13 @@ The ones a replicator can hit.
   same night. The metric-reading code is engine-aware (it was checked, not
   assumed) so this is not an SGLang/vLLM name mismatch; the actual cause is
   unresolved. Its numbers are not published here — see Concurrency.
+- **Prefix caching forces vLLM's Mamba cache into `align` mode for this model**
+  (`config.py:605`), and `--mamba-cache-mode none`/`all` cannot override it —
+  vLLM silently reverts both. On 2026-09-07 that mode returned completions
+  ignoring the prompt. It has not reproduced since across 16 growing-suffix
+  turns and five gate rounds on two images, and the default is `PREFIX_CACHE=1`
+  again, but the cause was never found. Run `bench/suffix_gate.py` on your own
+  workload before depending on exact output.
 - **`GPU_MEM` above 0.80 leaves too little page cache for the mmapped table**
   and the box drifts toward swap over a long-running day (documented upstream).
 - Prepare the hybrid checkpoint with the server stopped; the conversion needs
@@ -330,20 +348,37 @@ AGENT_SETUP.md                  paste into a coding agent on the Spark to do the
   inherited `concbench.py` disagrees with sparkDash by too much to trust
   either without more work, so the concurrency claim in this README is
   sparkDash's, cited as an external measurement.
-- **Quality is not measured.** No task benchmark has been run against this
-  recipe; the numbers here are speed and acceptance only.
+- **Quality is not measured.** The frozen task replay checks that each task
+  completes its token budget and returns a stable output hash; that is a
+  functional check, not a quality benchmark. No task benchmark has been run
+  against any of these recipes. The `build/` overlays set BF16 recurrent state,
+  which **changes generation hashes** against the stock recipe — a precision
+  change, not a lossless one.
+- **The prefix-caching correctness story is incomplete.** The 2026-09-07
+  failure's root cause was never found. Sixteen turns on the failing pattern
+  plus five `cache_gate.py` rounds across two images found no corruption, but
+  that is "not reproduced", not "fixed", and it is not a soak. Run
+  `bench/suffix_gate.py` against your own workload rather than taking the
+  default on trust.
 - **`FAST_LOAD` is experimental**, not the default, with a fix deployed but not
   yet proven across many boots.
 - **Weights are not included** and carry Qwen's own licence.
-- This repository does not build an engine image; it patches
-  [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX) in
-  place. It is not tracking that repo's main branch.
+- This repository does not build an engine image from scratch. `serve.sh`
+  patches [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX)
+  in place, and `build/` layers four overlays on top of that image. It is not
+  tracking that repo's main branch, and every overlay is SHA-pinned to the
+  file versions it was measured against.
 
 ## Credits
 
 [blazux](https://github.com/blazux) for `qwen3.8-Flash-DGX`, the route that
-makes this fit. RadixArk for the NVFP4 checkpoint. [MiaAI-Lab](https://github.com/MiaAI-Lab)
-for sparkDash, the concurrency instrument. The vLLM and Qwen teams.
+makes this fit. RadixArk for the NVFP4 checkpoint.
+[MiaAI-Lab](https://github.com/MiaAI-Lab) for sparkDash, the concurrency
+instrument, and for the reduced-draft-vocabulary technique that
+`build/01-draft-vocab` implements. Jürgen Schmied for the deterministic top-k
+kernel vendored in `build/02-det-topk`. The FR-Spec paper for the idea behind
+the reduced draft head. The vLLM and Qwen teams — including for
+`use_local_argmax_reduction`, the hook the draft-vocabulary overlay is built on.
 
 ## License
 

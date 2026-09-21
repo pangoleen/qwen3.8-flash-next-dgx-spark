@@ -80,7 +80,7 @@ your own workload.
 | Engine | [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX): the official vLLM Flash-Next image plus the PLE-mmap patch layer | upstream repo |
 | Checkpoint | `RadixArk/Qwen3.8-Flash-Next-NVFP4`, ~127 GB on disk, as published | checkpoint card |
 | Memory in use | ~105 GB after load; 14-17 GB left. Nothing else large can run beside it | measured here |
-| Boot | ~300 s with `FAST_LOAD=1` (experimental, see Traps), otherwise 8-13 min | measured here |
+| Boot | **283 s with `FAST_LOAD=1`**, otherwise ~904 s (15 min) | measured here 2026-09-21, see Boot time |
 | Context | 262,144 tokens native; up to ~500,000 with YaRN (`YARN=1`, validated) | checkpoint config, measured here |
 | Docker + NVIDIA Container Toolkit | required (`docker run --gpus all`) | measured the hard way |
 
@@ -258,8 +258,8 @@ response.
 
 ## Logs and troubleshooting
 
-- `docker logs -f qwen38-flash`: boot is 8-13 minutes (~300 s with
-  `FAST_LOAD=1`); wait for "Application startup complete".
+- `docker logs -f qwen38-flash`: boot is ~904 s by default, **283 s with
+  `FAST_LOAD=1`**; wait for "Application startup complete".
 - `docker inspect --format '{{.RestartCount}}' qwen38-flash` should be 0. A
   green `/v1/models` can answer before the scheduler is actually live; a
   `/v1/chat/completions` call that hangs or 500s while `/v1/models` is green
@@ -270,6 +270,55 @@ response.
 - `Input length ... exceeds the maximum allowed length` is the context window,
   not the KV pool; lower the prompt or raise `CTX` (native ceiling 262,144).
 
+## Boot time
+
+Measured 2026-09-21, cold cache, idle box.
+
+| Phase | default loader | `FAST_LOAD=1` |
+|---|---:|---:|
+| Pass 1, main model | 626 s | **52 s** |
+| Pass 2, MTP draft | 107 s | **36 s** |
+| Weight loading total | 742 s | **97 s** |
+| Engine init (35 s of it `torch.compile`) | — | 119 s |
+| **Total to ready** | **904 s** | **283 s** |
+
+On a container that skips `torch.compile`, the same loader change gives **176 s to ready** with model loading at 74.3 s.
+
+**The default loader is slow, and the disk is not the reason.** On this box the
+NVMe reads at 3.07 GB/s cold, but during a default load the disk moves 0.11 GB/s
+while one CPU core sits pegged at 99% user time — one thread of twenty.
+
+The cost is **tensor count, not bytes**. The checkpoint holds 299,847 tensors and
+294,912 of them (98.4%) are per-expert: 48 MoE layers x 512 experts x
+3 projections x 4 tensor kinds (`weight`, `weight_scale`, `weight_scale_2`,
+`input_scale`). Three of every four are tiny scale tensors, so the loader pays a
+flat ~0.2 ms of Python overhead each for almost no data. Measured with vLLM's own
+iterator on two slices of the same checkpoint:
+
+| Shard class | Throughput | Per tensor |
+|---|---:|---:|
+| Expert shards (small tensors) | 1.26 GB/s | 0.18 ms |
+| Non-expert shards (large tensors) | **12.96 GB/s** | 0.25 ms |
+
+Ten times the throughput per byte, with per-tensor cost flat.
+
+**What does not help.** `--safetensors-load-strategy=prefetch`: vLLM refuses it
+here and says why — ext4 is not a recognised network filesystem, and the
+checkpoint exceeds 90% of available RAM. `enable_multithread_load`: GIL bound,
+and it gets *worse* with more threads (1 thread 6.6 s, 4 -> 6.6 s, 8 -> 7.8 s,
+16 -> 9.3 s on a fixed 36,864-tensor slice).
+
+**Why `FAST_LOAD=1` works.** It does not optimise that path, it skips it.
+`fastsafetensors` stages whole shards into device memory and slices tensors
+there, so there is no per-tensor host copy. GPU Direct Storage must be forced
+off: vLLM sets `nogds = pg.size() > 1`, so at TP=1 it always attempts GDS, and
+this box has none — that is why an earlier attempt measured it 25x *slower*.
+
+For context, the official vLLM DGX Spark notes call a 10-15 minute first load
+normal for the default safetensors path. Pre-stacking the expert weights into 3-D
+tensors would collapse 294,912 tensors to ~384, but after `FAST_LOAD` it would
+buy at most ~50 s of a 283 s boot. Not worth the checkpoint rewrite.
+
 ## Traps
 
 The ones a replicator can hit.
@@ -277,14 +326,41 @@ The ones a replicator can hit.
 - **`serve.sh` picks an arbitrary snapshot if more than one exists and
   `REVISION` is unset.** It warns when this happens, but a silent pick is how a
   number stops being reproducible. Pin `REVISION` to the SHA under Weights.
-- **`FAST_LOAD=1` OOM-killed the container twice in five boots (2026-09-05)**
-  before a fix: `fastsafetensors` moves whole files to the device, so the load
-  pass for the MTP draft (three small bf16 shards) was re-streaming the entire
-  ~76 GiB checkpoint through device staging on top of what was already loaded.
-  `scripts/weight_utils.nogds.py` restricts that second pass to its own three
-  files. The fix is deployed and matches the mechanism, but has not yet been
-  proven clean over many boots — treat `FAST_LOAD=1` as experimental until it
-  has. Default is off.
+- **`FAST_LOAD=1`: the pass-2 fix is now proven (2026-09-21).** The original
+  problem: `fastsafetensors` moves whole files to the device, so the MTP draft
+  pass was re-streaming the entire ~76 GiB checkpoint on top of what was already
+  loaded, and OOM-killed the container twice in five boots (2026-09-05).
+  `scripts/weight_utils.nogds.py` restricts that second pass. Six boots on
+  2026-09-21 confirm it works — the log now says
+  `fastsafetensors: pass 2 keeps 4 of 206 files matching model-bf16-*`, and a
+  cold boot on an idle box reaches "Application startup complete" in **283 s on
+  the first attempt**.
+
+  Four of those six boots did retry engine init with a CUDA OOM. **That was a
+  stale container holding 93 GiB of GPU memory, not the loader.** If you see
+  "Engine core initialization failed" with an OOM, check for another container
+  before touching `GPU_MEM` — lowering it to 0.80 made things worse, not better.
+
+  > **Derived checkpoints need a wider pass-2 glob.** The default is
+  > `model-bf16-*`, which does **not** match `model-z-mtp-fp8.safetensors`. With
+  > an FP8 MTP sidecar (`VLLM_MTP_FP8_EXPERTS=1`) the draft would load without
+  > its experts. The patch splits the glob on commas, so use:
+  >
+  > ```
+  > VLLM_FASTSAFETENSORS_PASS2_GLOB=model-bf16-0001[012].safetensors,model-z-mtp-fp8.safetensors
+  > ```
+  >
+  > Verified 2026-09-21 on a 207-file derived pack: the log reports
+  > `fastsafetensors: pass 2 keeps 4 of 207 files`, model loading drops from
+  > ~592 s to **74.3 s (8.0x)**, time to ready from ~10-15 min to **176 s**, and
+  > decode is unchanged (57.59 / 57.64 / 57.76 tok/s against 57.79 before).
+  > MTP tensors live in exactly those 4 files: 3,072 in the sidecar and 31 across
+  > `model-bf16-00010/11/12`.
+
+  Measured with this repo's `scripts/weight_utils.nogds.py` (byte-identical to
+  the copy used in the test run); the boots themselves went through a different
+  wrapper script, so the 283 s total still wants one confirming boot from this
+  repo's own `serve.sh`. The per-pass loader numbers below do transfer.
 - **GB10's unified memory does not reclaim clean page cache for `cudaMalloc`.**
   After serving for a while, the 47.7 GiB mmapped PLE table sits in page cache;
   a *second* fast boot can then fail allocating device memory with `MemFree`

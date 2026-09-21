@@ -45,7 +45,10 @@
 #                     if more than one exists — fine for a single clean download, not
 #                     for reproducing a specific number
 #   EXTRA=            extra vllm flags passed verbatim
-#   FAST_LOAD=0       1 = fastsafetensors loader, nogds forced (boot ~300 s instead of
+#   FAST_LOAD=1       fastsafetensors loader, nogds forced. Measured 904 s -> 283 s to
+#                     ready, or 176 s on a container that skips torch.compile. Default 0.
+#   PASS2_GLOB        files the MTP draft pass may open (comma-separated). Default covers
+#                     model-bf16-* and an FP8 MTP sidecar. Old line follows (boot ~300 s instead of
 #                     ~760 s). Experimental: OOM-killed 2 of 5 boots before the pass-2
 #                     file filter below; that fix is deployed but not yet proven over
 #                     many boots. Default off — see README, Traps.
@@ -78,7 +81,14 @@ EXTRA="${EXTRA:-}"
 FAST_LOAD="${FAST_LOAD:-0}"
 if [ "$FAST_LOAD" = 1 ]; then
   LOAD_FORMAT=fastsafetensors
-  EXTRA_ENV="${EXTRA_ENV:-} -e VLLM_FASTSAFETENSORS_NOGDS=1 -e VLLM_FASTSAFETENSORS_SKIP_GLOB=model-plefp8-* -e VLLM_FASTSAFETENSORS_PASS2_GLOB=model-bf16-*"
+  # Pass 2 loads only the MTP draft. Restrict it to the files that actually
+  # hold MTP tensors, or fastsafetensors re-streams the whole checkpoint.
+  # A derived pack with an FP8 MTP sidecar keeps 3,072 of them in
+  # model-z-mtp-fp8.safetensors, which "model-bf16-*" does not match: the
+  # draft would then load without its experts, silently and at full speed.
+  # Patterns that match nothing are harmless, so the default covers both.
+  PASS2_GLOB="${PASS2_GLOB:-model-bf16-*,model-z-mtp-fp8.safetensors}"
+  EXTRA_ENV="${EXTRA_ENV:-} -e VLLM_FASTSAFETENSORS_NOGDS=1 -e VLLM_FASTSAFETENSORS_SKIP_GLOB=model-plefp8-* -e VLLM_FASTSAFETENSORS_PASS2_GLOB=$PASS2_GLOB"
   EXTRA_MOUNT="${EXTRA_MOUNT:-} -v $(cd "$(dirname "$0")" && pwd)/scripts/weight_utils.nogds.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/model_loader/weight_utils.py:ro"
 fi
 
@@ -201,5 +211,5 @@ docker run -d --name "$NAME" --restart unless-stopped \
     "${SPEC[@]}"
 
 echo ">> $NAME starting on :$PORT (model 'qwen3.8-flash-next', mode=$MODE, ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, prefix_cache=$PREFIX_CACHE, exact_topk=$EXACT_TOPK)"
-echo ">> first boot loads ~76 GiB of weights (~8-13 min, ~300 s with FAST_LOAD=1). Follow:  docker logs -f $NAME"
+echo ">> first boot loads ~76 GiB of weights (~15 min, or ~3 min with FAST_LOAD=1). Follow:  docker logs -f $NAME"
 echo ">> ready when the log says 'Application startup complete'."
